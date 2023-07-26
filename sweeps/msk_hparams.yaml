@@ -23,6 +23,8 @@ parameters:
     values: [true, false]
   model.num_heads:
     values: [4, 1, 8]
+  dataset:
+    values: [msk_categorical, msk_categorical_weighted]
   learning_rate:
     value: 1e-4
 
@@ -30,5 +32,4 @@ command:
   - env/bin/python
   - ${program}
   - ${args_no_hyphens}
-  - dataset=msk_categorical
   - name=sweep_experiment

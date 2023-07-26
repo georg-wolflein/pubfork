@@ -1,7 +1,6 @@
-# %%
 import re
 from collections import ChainMap
-from typing import Any, Dict, Mapping, Optional, Tuple, Sequence
+from typing import Any, Dict, Mapping, Optional, Tuple, Sequence, Type
 from functools import partial
 
 import re
@@ -9,10 +8,12 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 import torchmetrics
+from torchmetrics import Metric
 from torch import Tensor, nn
-from torchmetrics.utilities.data import dim_zero_cat
-from torchmetrics.classification import MulticlassAUROC, BinaryAUROC
+from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision
 from omegaconf import DictConfig
+
+from .metrics import create_metrics_for_target
 
 
 class MultiheadAttention(nn.Module):
@@ -263,21 +264,6 @@ class MilTransformer(nn.Module):
         return logits
 
 
-def create_metrics_for_target(target) -> torchmetrics.MetricCollection:
-    if target.type == "categorical":
-        return torchmetrics.MetricCollection(
-            {
-                f"auroc": MulticlassAUROC(num_classes=len(target.classes)),
-                **{
-                    f"auroc_{c}": ClasswiseMulticlassAUROC(class_id=i)
-                    for i, c in enumerate(target.classes)
-                },
-            }
-        )
-    else:
-        raise NotImplementedError(f"Unknown target type {target.type}")
-
-
 class LitMilClassificationMixin(pl.LightningModule):
     """Makes a module into a multilabel, multiclass Lightning one"""
 
@@ -385,27 +371,3 @@ class LitMilClassificationMixin(pl.LightningModule):
 
 def sanitize(x: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", x)
-
-
-class SafeMulticlassAUROC(MulticlassAUROC):
-    """A Multiclass AUROC that doesn't blow up when no targets are given"""
-
-    def compute(self) -> torch.Tensor:
-        # Add faux entry if there are none so far
-        if len(self.preds) == 0:
-            self.update(torch.zeros(1, self.num_classes), torch.zeros(1).long())
-        elif len(dim_zero_cat(self.preds)) == 0:
-            self.update(
-                torch.zeros(1, self.num_classes).type_as(self.preds[0]),
-                torch.zeros(1).long().type_as(self.target[0]),
-            )
-        return super().compute()
-
-
-class ClasswiseMulticlassAUROC(BinaryAUROC):
-    def __init__(self, *args, class_id, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.class_id = class_id
-
-    def update(self, preds: Tensor, target: Tensor):
-        super().update(preds[..., self.class_id], target == self.class_id)

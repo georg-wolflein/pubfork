@@ -1,0 +1,10 @@
+clini_tables: ["/mnt/bulk/gwoelflein/georg-transformers/metadata/MSKCC-BRCA-DX_Cohort_1_CLINI.xlsx"]
+slide_tables: ["/mnt/bulk/gwoelflein/georg-transformers/metadata/MSKCC-BRCA-DX_SLIDE.csv"]
+feature_dirs: ["/mnt/bulk/gwoelflein/georg-transformers/data/MSKCC-BRCA-DX_BATCH1/ctranspath"]
+filename_col: FILENAME
+patient_col: PATIENT
+targets:
+  - column: HER2_3groups
+    type: categorical
+    classes: [HER2high, HER2low, HER2no]
+    weights: [0.05119, 0.07309, 0.8757]
