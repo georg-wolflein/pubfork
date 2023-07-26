@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence, Tuple
-
+import sys
 import pandas as pd
 import pytorch_lightning as pl
 import torch
@@ -8,14 +8,13 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers.wandb import WandbLogger
 from torch.nn import functional as F
-
+import wandb
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig, ListConfig, OmegaConf
 import hydra
 from hydra.core.global_hydra import GlobalHydra
 import os
-
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
@@ -50,7 +49,25 @@ class LitMilTransformer(LitMilClassificationMixin):
         return self.model(*args)
 
 
-@hydra.main(config_path="conf", config_name="config")
+def encode_target(clini_df: pd.DataFrame, target_cfg: DictConfig) -> torch.Tensor:
+    if target_cfg.type == "categorical":
+        values = clini_df[target_cfg.column].map(
+            {c: i for i, c in enumerate(target_cfg.classes)}
+        )
+        return F.one_hot(
+            torch.tensor(values.values, dtype=torch.long), len(target_cfg.classes)
+        ).float()
+    else:
+        raise NotImplementedError(f"target type {target_cfg.type} not implemented")
+
+
+def encode_targets(
+    clini_df: pd.DataFrame, target_cfgs: ListConfig
+) -> Mapping[str, torch.Tensor]:
+    return {target.column: encode_target(clini_df, target) for target in target_cfgs}
+
+
+@hydra.main(config_path="conf", config_name="config", version_base="1.3")
 def app(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
     torch.set_float32_matmul_precision("medium")
@@ -81,24 +98,6 @@ def app(cfg: DictConfig) -> None:
     assert not (
         overlap := set(train_df.index) & set(valid_df.index)
     ), f"unexpected overlap between training and testing set: {overlap}"
-
-    def encode_target(clini_df: pd.DataFrame, target_cfg: DictConfig) -> torch.Tensor:
-        if target_cfg.type == "categorical":
-            values = clini_df[target_cfg.column].map(
-                {c: i for i, c in enumerate(target_cfg.classes)}
-            )
-            return F.one_hot(
-                torch.tensor(values.values, dtype=torch.long), len(target_cfg.classes)
-            ).float()
-        else:
-            raise NotImplementedError(f"target type {target_cfg.type} not implemented")
-
-    def encode_targets(
-        clini_df: pd.DataFrame, target_cfgs: ListConfig
-    ) -> Mapping[str, torch.Tensor]:
-        return {
-            target.column: encode_target(clini_df, target) for target in target_cfgs
-        }
 
     train_targets = encode_targets(train_df, cfg.dataset.targets)
     valid_targets = encode_targets(valid_df, cfg.dataset.targets)
@@ -131,8 +130,21 @@ def app(cfg: DictConfig) -> None:
 
     model = LitMilTransformer(cfg)
 
+    wandb_logger = WandbLogger(
+        cfg.name,
+        project=cfg.project,
+        settings=wandb.Settings(code_dir=str(Path(__file__).parent)),
+    )
+    wandb_logger.log_hyperparams(
+        {
+            **OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+            "overrides": " ".join(sys.argv[1:]),
+        }
+    )
+    out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
+
     trainer = pl.Trainer(
-        default_root_dir=cfg.output_dir,
+        default_root_dir=out_dir,
         callbacks=[
             EarlyStopping(monitor="val_loss", mode="min", patience=cfg.patience),
             ModelCheckpoint(
@@ -154,10 +166,10 @@ def app(cfg: DictConfig) -> None:
         devices=1,
         accumulate_grad_batches=cfg.accumulate_grad_samples // cfg.dataset.batch_size,
         gradient_clip_val=cfg.grad_clip,
-        logger=[CSVLogger(save_dir=cfg.output_dir), WandbLogger(cfg.name)],
+        logger=[CSVLogger(save_dir=out_dir), wandb_logger],
     )
 
-    # trainer.fit(model=model, train_dataloaders=train_dl, val_dataloaders=valid_dl)
+    trainer.fit(model=model, train_dataloaders=train_dl, val_dataloaders=valid_dl)
 
     predictions = flatten_batched_dicts(
         trainer.predict(model=model, dataloaders=valid_dl, return_predictions=True)
@@ -168,7 +180,7 @@ def app(cfg: DictConfig) -> None:
         base_df=valid_df,
         categories={target.column: target.classes for target in cfg.dataset.targets},
     )
-    preds_df.to_csv(Path(cfg.output_dir) / "valid-patient-preds.csv")
+    preds_df.to_csv(out_dir / "valid-patient-preds.csv")
 
 
 if __name__ == "__main__":

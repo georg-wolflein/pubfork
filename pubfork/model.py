@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import torchmetrics
 from torch import Tensor, nn
 from torchmetrics.utilities.data import dim_zero_cat
+from torchmetrics.classification import MulticlassAUROC, BinaryAUROC
 from omegaconf import DictConfig
 
 
@@ -20,7 +21,7 @@ class MultiheadAttention(nn.Module):
         embed_dim,
         num_heads,
         dropout=0.0,
-        bias=True,
+        bias=False,
         add_bias_kv=False,
         add_zero_attn=False,
         kdim=None,
@@ -34,7 +35,6 @@ class MultiheadAttention(nn.Module):
         # Unsupported arguments
         assert batch_first is True
         assert add_bias_kv is False
-        assert add_zero_attn is False
         assert device is None
         assert dtype is None
 
@@ -47,6 +47,7 @@ class MultiheadAttention(nn.Module):
         self.num_heads = num_heads
         self.kdim = kdim
         self.vdim = vdim
+        self.add_zero_attn = add_zero_attn
 
         # Stack all weight matrices 1...h together for efficiency
         # Note that in many implementations you see "bias=False" which is optional
@@ -61,11 +62,14 @@ class MultiheadAttention(nn.Module):
     def _reset_parameters(self):
         # Original Transformer initialization, see PyTorch documentation
         nn.init.xavier_uniform_(self.q_proj.weight)
-        self.q_proj.bias.data.fill_(0)
+        if self.q_proj.bias is not None:
+            self.q_proj.bias.data.fill_(0)
         nn.init.xavier_uniform_(self.k_proj.weight)
-        self.k_proj.bias.data.fill_(0)
+        if self.k_proj.bias is not None:
+            self.k_proj.bias.data.fill_(0)
         nn.init.xavier_uniform_(self.v_proj.weight)
-        self.v_proj.bias.data.fill_(0)
+        if self.v_proj.bias is not None:
+            self.v_proj.bias.data.fill_(0)
 
     def forward(
         self,
@@ -77,19 +81,23 @@ class MultiheadAttention(nn.Module):
         **kwargs,
     ):
         batch_size, seq_length, _ = query.shape
-        q = self.q_proj(query)
-        k = self.k_proj(key)
-        v = self.v_proj(value)
+        q = self.q_proj(query)  # [Batch, SeqLen, Dims]
+        k = self.k_proj(key)  # [Batch, SeqLen, Dims]
+        v = self.v_proj(value)  # [Batch, SeqLen, Dims]
+
+        if self.add_zero_attn:
+            q = torch.cat([q, torch.zeros(batch_size, 1, self.kdim).type_as(q)], dim=1)
+            k = torch.cat([k, torch.zeros(batch_size, 1, self.kdim).type_as(k)], dim=1)
 
         q = q.reshape(
-            batch_size, seq_length, self.num_heads, self.kdim // self.num_heads
-        )
+            *q.shape[:2], self.num_heads, self.kdim // self.num_heads
+        )  # [Batch, SeqLen, Head, Dims]
         k = k.reshape(
-            batch_size, seq_length, self.num_heads, self.kdim // self.num_heads
-        )
+            *k.shape[:2], self.num_heads, self.kdim // self.num_heads
+        )  # [Batch, SeqLen, Head, Dims]
         v = v.reshape(
-            batch_size, seq_length, self.num_heads, self.vdim // self.num_heads
-        )
+            *v.shape[:2], self.num_heads, self.vdim // self.num_heads
+        )  # [Batch, SeqLen, Head, Dims]
 
         q = q.permute(0, 2, 1, 3)  # [Batch, Head, SeqLen, Dims]
         k = k.permute(0, 2, 1, 3)  # [Batch, Head, SeqLen, Dims]
@@ -99,7 +107,10 @@ class MultiheadAttention(nn.Module):
         d_k = q.size()[-1]
         attn_logits = torch.matmul(q, k.transpose(-2, -1))
         attn_logits = attn_logits / d_k**0.5
-        attention = F.softmax(attn_logits, dim=-1)
+        attention = F.softmax(attn_logits, dim=-1)  # [Batch, Head, SeqLen, SeqLen]
+        if self.add_zero_attn:
+            # Remove zeroed out tokens
+            attention = attention[:, :, :-1, :-1]
 
         dropout_attention = self.dropout(attention)
         values = torch.matmul(dropout_attention, v)
@@ -119,30 +130,60 @@ class MilTransformer(nn.Module):
         d_features: int,
         targets: Sequence[DictConfig],
         agg: str = "max",  # "mean" or "max"
+        num_layers: int = 1,
+        num_heads: int = 4,
+        do_linear_reshuffle: bool = False,
+        hidden_dim=128,
+        att_dropout=0.1,
+        linear_dropout=0.1,
+        add_zero_attn=False,
+        layer_norm=True,
     ) -> None:
         super().__init__()
         self.targets = targets
         self.agg = agg
+        self.linear_dropout = linear_dropout
+        self.layer_norm = layer_norm
 
         # self.projector = nn.Sequential(nn.Linear(d_features, d_model), nn.ReLU())
 
-        hidden_dim = 64
+        if layer_norm:
+            self.layer_norm1 = nn.LayerNorm(d_features)
+            self.layer_norms = nn.ModuleList(
+                [nn.LayerNorm(hidden_dim) for _ in range(num_layers - 1)]
+            )
+        else:
+            self.layer_norms = [None for _ in range(num_layers - 1)]
 
         self.msa1 = MultiheadAttention(
             embed_dim=d_features,
-            num_heads=4,
-            dropout=0.1,
+            num_heads=num_heads,
+            dropout=att_dropout,
             batch_first=True,
             kdim=hidden_dim,
             vdim=hidden_dim,
+            add_zero_attn=add_zero_attn,
         )
-        self.msa2 = MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=4,
-            dropout=0.1,
-            batch_first=True,
-            kdim=hidden_dim,
-            vdim=hidden_dim,
+        self.msas = nn.ModuleList(
+            [
+                MultiheadAttention(
+                    embed_dim=hidden_dim,
+                    num_heads=num_heads,
+                    dropout=att_dropout,
+                    batch_first=True,
+                    kdim=hidden_dim,
+                    vdim=hidden_dim,
+                    add_zero_attn=add_zero_attn,
+                )
+                for _ in range(num_layers - 1)
+            ]
+        )
+        self.linears = (
+            nn.ModuleList(
+                [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 1)]
+            )
+            if do_linear_reshuffle
+            else [None for _ in range(num_layers - 1)]
         )
 
         self.heads = nn.ModuleDict(
@@ -168,8 +209,18 @@ class MilTransformer(nn.Module):
         # tile_tokens = self.projector(tile_tokens)
 
         x = tile_tokens
+        if self.layer_norm:
+            x = self.layer_norm1(x)
         x = self.msa1(x, x, x)[0]
-        x = self.msa2(x, x, x)[0]
+        for layer_norm, linear, msa in zip(self.layer_norms, self.linears, self.msas):
+            if linear:
+                x = linear(x)
+                if self.linear_dropout:
+                    x = F.dropout(x, p=self.linear_dropout)
+                x = F.relu(x)
+            if linear:
+                x = linear(x)
+            x = msa(x, x, x)[0]
 
         # Aggregate the tile tokens
         if self.agg == "mean":
@@ -192,10 +243,11 @@ def create_metrics_for_target(target) -> torchmetrics.MetricCollection:
     if target.type == "categorical":
         return torchmetrics.MetricCollection(
             {
-                f"auroc": SafeMulticlassAUROC(num_classes=len(target.classes)),
-                f"aurocs": SafeMulticlassAUROC(
-                    num_classes=len(target.classes), average="macro"
-                ),
+                f"auroc": MulticlassAUROC(num_classes=len(target.classes)),
+                **{
+                    f"auroc_{c}": ClasswiseMulticlassAUROC(class_id=i)
+                    for i, c in enumerate(target.classes)
+                },
             }
         )
     else:
@@ -223,10 +275,12 @@ class LitMilClassificationMixin(pl.LightningModule):
             setattr(
                 self,
                 f"{step_name}_target_metrics",
-                {
-                    sanitize(target.column): create_metrics_for_target(target)
-                    for target in self.targets
-                },
+                nn.ModuleDict(
+                    {
+                        sanitize(target.column): create_metrics_for_target(target)
+                        for target in self.targets
+                    }
+                ),
             )
 
         self.save_hyperparameters()
@@ -263,19 +317,19 @@ class LitMilClassificationMixin(pl.LightningModule):
                     sanitize(target.column)
                 ]
 
-                is_na = (targets[target.column] == 0).all(dim=1)
                 target_metrics.update(
-                    logits[target.column][~is_na],
-                    targets[target.column][~is_na].argmax(dim=1),
+                    logits[target.column],
+                    targets[target.column].argmax(dim=1),
                 )
-                for name, metric in target_metrics.items():
-                    self.log(
-                        f"{step_name}_{target.column}_{name}",
-                        metric,
-                        on_step=False,
-                        on_epoch=True,
-                        sync_dist=True,
-                    )
+                self.log_dict(
+                    {
+                        f"{step_name}_{target.column}_{name}": metric
+                        for name, metric in target_metrics.items()
+                    },
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
 
         return loss
 
@@ -309,7 +363,7 @@ def sanitize(x: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", x)
 
 
-class SafeMulticlassAUROC(torchmetrics.classification.MulticlassAUROC):
+class SafeMulticlassAUROC(MulticlassAUROC):
     """A Multiclass AUROC that doesn't blow up when no targets are given"""
 
     def compute(self) -> torch.Tensor:
@@ -322,3 +376,12 @@ class SafeMulticlassAUROC(torchmetrics.classification.MulticlassAUROC):
                 torch.zeros(1).long().type_as(self.target[0]),
             )
         return super().compute()
+
+
+class ClasswiseMulticlassAUROC(BinaryAUROC):
+    def __init__(self, *args, class_id, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_id = class_id
+
+    def update(self, preds: Tensor, target: Tensor):
+        super().update(preds[..., self.class_id], target == self.class_id)

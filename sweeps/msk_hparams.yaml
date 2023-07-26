@@ -1,0 +1,28 @@
+program: train.py
+name: msk_grid_search
+method: bayes
+metric:
+  goal: maximize
+  name: val_HER2_3groups_auroc
+parameters:
+  model.num_layers:
+    value: 2
+  model.do_linear_reshuffle:
+    value: true
+  model.hidden_dim:
+    values: [256, 512]
+  model.att_dropout:
+    values: [.1, .3]
+  model.linear_dropout:
+    values: [0., .1, .3]
+  model.agg:
+    values: [max, mean]
+  learning_rate:
+    value: 1e-4
+
+command:
+  - env/bin/python
+  - ${program}
+  - ${args_no_hyphens}
+  - dataset=msk_categorical
+  - name=sweep_experiment

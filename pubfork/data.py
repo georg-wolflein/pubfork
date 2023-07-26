@@ -75,7 +75,7 @@ class BagDataset(Dataset):
                     coords,
                     n=self.instances_per_bag,
                     deterministic=self.deterministic,
-                    pad=self.pad
+                    pad=self.pad,
                 )
 
             feat_list.append(feats.float())
@@ -93,7 +93,7 @@ class BagDataset(Dataset):
                 coords,
                 n=self.instances_per_bag,
                 deterministic=self.deterministic,
-                pad=self.pad
+                pad=self.pad,
             )
 
         return (
@@ -101,14 +101,14 @@ class BagDataset(Dataset):
             coords,
             {label: target[index] for label, target in self.targets.items()},
         )
-    
+
     def dummy_batch(self, batch_size: int):
         """Create a dummy batch of the largest possible size"""
         sample_feats, sample_coords, sample_labels = self[0]
         d_model = sample_feats.shape[-1]
         instances_per_bag = self.instances_per_bag or sample_feats.shape[-2]
         tile_tokens = torch.rand((batch_size, instances_per_bag, d_model))
-        tile_positions = (torch.rand((batch_size, instances_per_bag, 2)) * 100)
+        tile_positions = torch.rand((batch_size, instances_per_bag, 2)) * 100
         labels = {
             label: value.expand(batch_size, *value.shape)
             for label, value in sample_labels.items()
@@ -116,7 +116,9 @@ class BagDataset(Dataset):
         return tile_tokens, tile_positions, labels
 
 
-def pad_or_sample(*xs: torch.Tensor, n: int, deterministic: bool, pad: bool = True) -> List[torch.Tensor]:
+def pad_or_sample(
+    *xs: torch.Tensor, n: int, deterministic: bool, pad: bool = True
+) -> List[torch.Tensor]:
     assert (
         len(set(x.shape[0] for x in xs)) == 1
     ), "all inputs have to be of equal length"
@@ -127,8 +129,7 @@ def pad_or_sample(*xs: torch.Tensor, n: int, deterministic: bool, pad: bool = Tr
             return list(xs)
         # Too few features; pad with zeros
         pad_size = n - length
-        padded = [torch.cat([x, torch.zeros(pad_size, *x.shape[1:])])
-                  for x in xs]
+        padded = [torch.cat([x, torch.zeros(pad_size, *x.shape[1:])]) for x in xs]
         return padded
     elif deterministic:
         # Sample equidistantly
