@@ -132,7 +132,8 @@ class MilTransformer(nn.Module):
         agg: str = "max",  # "mean" or "max"
         num_layers: int = 1,
         num_heads: int = 4,
-        do_linear_reshuffle: bool = False,
+        do_linear_proj: bool = False,
+        do_initial_linear_proj: bool = False,
         hidden_dim=128,
         att_dropout=0.1,
         linear_dropout=0.1,
@@ -148,22 +149,37 @@ class MilTransformer(nn.Module):
         # self.projector = nn.Sequential(nn.Linear(d_features, d_model), nn.ReLU())
 
         if layer_norm:
-            self.layer_norm1 = nn.LayerNorm(d_features)
+            self.layer_norm1 = nn.LayerNorm(
+                hidden_dim if do_initial_linear_proj else d_features
+            )
             self.layer_norms = nn.ModuleList(
                 [nn.LayerNorm(hidden_dim) for _ in range(num_layers - 1)]
             )
         else:
             self.layer_norms = [None for _ in range(num_layers - 1)]
 
-        self.msa1 = MultiheadAttention(
-            embed_dim=d_features,
-            num_heads=num_heads,
-            dropout=att_dropout,
-            batch_first=True,
-            kdim=hidden_dim,
-            vdim=hidden_dim,
-            add_zero_attn=add_zero_attn,
-        )
+        if do_initial_linear_proj:
+            self.linear1 = nn.Linear(d_features, hidden_dim)
+            self.msa1 = MultiheadAttention(
+                embed_dim=hidden_dim,
+                num_heads=num_heads,
+                dropout=att_dropout,
+                batch_first=True,
+                kdim=hidden_dim,
+                vdim=hidden_dim,
+                add_zero_attn=add_zero_attn,
+            )
+        else:
+            self.linear1 = None
+            self.msa1 = MultiheadAttention(
+                embed_dim=d_features,
+                num_heads=num_heads,
+                dropout=att_dropout,
+                batch_first=True,
+                kdim=hidden_dim,
+                vdim=hidden_dim,
+                add_zero_attn=add_zero_attn,
+            )
         self.msas = nn.ModuleList(
             [
                 MultiheadAttention(
@@ -182,7 +198,7 @@ class MilTransformer(nn.Module):
             nn.ModuleList(
                 [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 1)]
             )
-            if do_linear_reshuffle
+            if do_linear_proj
             else [None for _ in range(num_layers - 1)]
         )
 
@@ -209,6 +225,11 @@ class MilTransformer(nn.Module):
         # tile_tokens = self.projector(tile_tokens)
 
         x = tile_tokens
+        if self.linear1:
+            x = self.linear1(x)
+            if self.linear_dropout:
+                x = F.dropout(x, p=self.linear_dropout)
+            x = F.relu(x)
         if self.layer_norm:
             x = self.layer_norm1(x)
         x = self.msa1(x, x, x)[0]
@@ -218,8 +239,11 @@ class MilTransformer(nn.Module):
                 if self.linear_dropout:
                     x = F.dropout(x, p=self.linear_dropout)
                 x = F.relu(x)
-            if linear:
-                x = linear(x)
+            # Linear bug: apply the following instead of layer_norm
+            # if linear:
+            #     x = linear(x)
+            if layer_norm:
+                x = layer_norm(x)
             x = msa(x, x, x)[0]
 
         # Aggregate the tile tokens

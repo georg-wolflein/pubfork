@@ -33,7 +33,9 @@ model:
   targets: ${dataset.targets}
   agg: max # max, mean
   num_layers: 2
-  do_linear_reshuffle: true
+  num_heads: 4
+  do_linear_proj: true
+  do_initial_linear_proj: false
   hidden_dim: 256
   att_dropout: 0.1
   linear_dropout: 0.1
