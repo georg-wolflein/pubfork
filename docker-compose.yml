@@ -1,0 +1,26 @@
+version: "3.7"
+services:
+  main:
+    container_name: georg-pubfork
+    build:
+      context: .
+      dockerfile: "Dockerfile"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}
+              # device_ids: [ "0" ]
+              capabilities: [ gpu ]
+    # ports:
+    #   - "8888:8888"
+    #   - "9999:9999"
+    shm_size: "16gb"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    volumes:
+      - "${HOST_APP_FOLDER:-~/pubfork}:/app"
+      - "/mnt/isilon1/georg/data:/data"
+      - "/mnt/isilon1/georg/metadata:/metadata"
