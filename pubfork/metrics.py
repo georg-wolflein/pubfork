@@ -35,11 +35,11 @@ def create_metrics_for_target(target) -> MetricCollection:
     if target.type == "categorical":
         multiclass_metrics = {
             "auroc": MulticlassAUROC,
-            "ap": MulticlassAveragePrecision,
+            # "ap": MulticlassAveragePrecision,
         }
         classwise_metrics = {
             "auroc": ClasswiseMulticlassAUROC,
-            "ap": ClasswiseMulticlassAveragePrecision,
+            # "ap": ClasswiseMulticlassAveragePrecision,
         }
         return MetricCollection(
             {
