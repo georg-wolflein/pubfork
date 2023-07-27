@@ -138,7 +138,7 @@ def app(cfg: DictConfig) -> None:
         }
     )
     wandb_logger.experiment.log_code(
-        ".", include_fn=lambda path: path.suffix in {".py", ".yaml", ".yml"}
+        ".", include_fn=lambda path: Path(path).suffix in {".py", ".yaml", ".yml"}
     )
     out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
 
