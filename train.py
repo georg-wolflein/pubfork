@@ -138,11 +138,12 @@ def app(cfg: DictConfig) -> None:
         }
     )
     wandb_logger.experiment.log_code(
-        ".", include_fn=lambda path: Path(path).suffix in {".py", ".yaml", ".yml"}
+        ".", include_fn=lambda path: Path(path).suffix in {".py", ".yaml", ".yml"} and "env" not in Path(path).parts
     )
     out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
 
     trainer = pl.Trainer(
+        profiler="simple",
         default_root_dir=out_dir,
         callbacks=[
             EarlyStopping(monitor="val_loss", mode="min", patience=cfg.patience),
@@ -167,6 +168,8 @@ def app(cfg: DictConfig) -> None:
         gradient_clip_val=cfg.grad_clip,
         logger=[CSVLogger(save_dir=out_dir), wandb_logger],
     )
+
+    print(model.summary())
 
     trainer.fit(model=model, train_dataloaders=train_dl, val_dataloaders=valid_dl)
 
