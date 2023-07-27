@@ -43,9 +43,6 @@ class BagDataset(Dataset):
     """
 
     def __len__(self):
-        if self.deterministic:
-            return 8
-        return min(512, len(self.bags))
         return len(self.bags)
 
     def __getitem__(

@@ -134,7 +134,6 @@ MHA = Union[MultiheadAttention, DistanceAwareMultiheadAttention, nn.MultiheadAtt
 
 
 class MHAWrapper(nn.Module):
-    __slots__ = ["mha", "add_tile_position_kwarg"]
 
     def __init__(self, mha: MHA):
         super().__init__()
