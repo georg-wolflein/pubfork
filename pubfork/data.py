@@ -133,7 +133,7 @@ def pad_or_sample(
         return padded
     elif deterministic:
         # Sample equidistantly
-        idx = torch.linspace(0, len(xs) - 1, steps=n, dtype=torch.int)
+        idx = torch.linspace(0, len(xs) - 1, steps=n, dtype=torch.long)
         return [x[idx] for x in xs]
     else:
         # Sample randomly
