@@ -51,7 +51,7 @@ class DistanceAwareMultiheadAttention(nn.Module):
         dtype=None,
         # Custom arguments for relative positional encoding
         embed_keys: bool = True,
-        embed_queries: bool = False,
+        embed_queries: bool = True,
         embed_values: bool = False,
         emb_dropout=0.0,  # TODO: test with dropout
     ):

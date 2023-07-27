@@ -115,6 +115,7 @@ def app(cfg: DictConfig) -> None:
         batch_size=cfg.dataset.batch_size,
         num_workers=cfg.dataset.num_workers,
         shuffle=True,
+        pin_memory=True
     )
 
     valid_ds = BagDataset(
@@ -125,7 +126,7 @@ def app(cfg: DictConfig) -> None:
         deterministic=True,
     )
     valid_dl = DataLoader(
-        valid_ds, batch_size=cfg.dataset.batch_size, num_workers=cfg.dataset.num_workers
+        valid_ds, batch_size=cfg.dataset.batch_size, num_workers=cfg.dataset.num_workers, pin_memory=True
     )
 
     model = LitMilTransformer(cfg)
@@ -169,7 +170,7 @@ def app(cfg: DictConfig) -> None:
         logger=[CSVLogger(save_dir=out_dir), wandb_logger],
     )
 
-    print(model.summary())
+    print(model)
 
     trainer.fit(model=model, train_dataloaders=train_dl, val_dataloaders=valid_dl)
 

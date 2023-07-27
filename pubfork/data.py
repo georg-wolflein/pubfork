@@ -14,7 +14,7 @@ __all__ = ["BagDataset"]
 class BagDataset(Dataset):
     """A dataset of bags of instances"""
 
-    bags: Sequence[Iterable[Path]]
+    bags: Sequence[Path]
     """The `.h5` files containing the bags
 
     Each bag consists of the features taken from one or multiple h5 files.
@@ -43,6 +43,9 @@ class BagDataset(Dataset):
     """
 
     def __len__(self):
+        if self.deterministic:
+            return 8
+        return min(512, len(self.bags))
         return len(self.bags)
 
     def __getitem__(
@@ -51,23 +54,23 @@ class BagDataset(Dataset):
         """Returns features, positions, targets"""
 
         # Collect features from all requested slides
-        feat_list, coord_list = [], []
-        for bag_file in self.bags[index]:
-            with h5py.File(bag_file, "r") as f:
-                # Ensure all features are created with the same feature extractor
-                this_slides_extractor = f.attrs.get("extractor")
-                if self.extractor is None:
-                    self.extractor = this_slides_extractor
-                assert this_slides_extractor == self.extractor, (
-                    "all features have to be extracted with the same feature extractor! "
-                    f"{bag_file} has been extracted with {this_slides_extractor}, "
-                    f"expected {self.extractor}"
-                )
+        assert len(self.bags[index]) == 1, "only one bag per index supported"
+        bag_file, = self.bags[index]
+        with h5py.File(bag_file, "r") as f:
+            # Ensure all features are created with the same feature extractor
+            this_slides_extractor = f.attrs.get("extractor")
+            if self.extractor is None:
+                self.extractor = this_slides_extractor
+            assert this_slides_extractor == self.extractor, (
+                "all features have to be extracted with the same feature extractor! "
+                f"{bag_file} has been extracted with {this_slides_extractor}, "
+                f"expected {self.extractor}"
+            )
 
-                feats, coords = (
-                    torch.tensor(f["feats"][:]),
-                    torch.tensor(f["coords"][:]),
-                )
+            feats, coords = (
+                torch.tensor(f["feats"][:]).float(),
+                torch.tensor(f["coords"][:]).float(),
+            )
 
             if self.instances_per_bag:
                 feats, coords = pad_or_sample(
@@ -78,23 +81,18 @@ class BagDataset(Dataset):
                     pad=self.pad,
                 )
 
-            feat_list.append(feats.float())
-            coord_list.append(coords.float())
-
-        feats, coords = torch.concat(feat_list), torch.concat(coord_list)
-
-        # We sample both on the slide as well as on the bag level
-        # to ensure that each of the bags gets represented
-        # Otherwise, drastically larger bags could "drown out"
-        # the few instances of the smaller bags
-        if self.instances_per_bag:
-            feats, coords = pad_or_sample(
-                feats,
-                coords,
-                n=self.instances_per_bag,
-                deterministic=self.deterministic,
-                pad=self.pad,
-            )
+        # # We sample both on the slide as well as on the bag level
+        # # to ensure that each of the bags gets represented
+        # # Otherwise, drastically larger bags could "drown out"
+        # # the few instances of the smaller bags
+        # if self.instances_per_bag:
+        #     feats, coords = pad_or_sample(
+        #         feats,
+        #         coords,
+        #         n=self.instances_per_bag,
+        #         deterministic=self.deterministic,
+        #         pad=self.pad,
+        #     )
 
         return (
             feats,

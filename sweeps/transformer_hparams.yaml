@@ -14,7 +14,7 @@ parameters:
   model.hidden_dim:
     values: [256]
   model.att_dropout:
-    values: [.3]
+    values: [.1, .3]
   model.linear_dropout:
     values: [.1]
   model.agg:
@@ -29,7 +29,8 @@ parameters:
     value: 1e-4
 
 command:
-  - env/bin/python
+  - /venv/bin/python
   - ${program}
+  - +override=msk_dgx
   - ${args_no_hyphens}
   - name=sweep_experiment
