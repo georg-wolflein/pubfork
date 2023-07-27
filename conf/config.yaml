@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - dataset@dataset: msk_categorical
+  - dataset@dataset: msk_categorical_weighted
   # - feature_extractor@model.feature_extractor: mnist
   # - classifier@model.classifier: linear
   # - optimizer@optimizer: adamw
