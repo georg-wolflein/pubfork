@@ -130,16 +130,15 @@ def app(cfg: DictConfig) -> None:
 
     model = LitMilTransformer(cfg)
 
-    wandb_logger = WandbLogger(
-        cfg.name,
-        project=cfg.project,
-        settings=wandb.Settings(code_dir=str(Path(__file__).parent)),
-    )
+    wandb_logger = WandbLogger(cfg.name, project=cfg.project)
     wandb_logger.log_hyperparams(
         {
             **OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             "overrides": " ".join(sys.argv[1:]),
         }
+    )
+    wandb_logger.experiment.log_code(
+        ".", include_fn=lambda path: path.suffix in {".py", ".yaml", ".yml"}
     )
     out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
 
@@ -163,7 +162,7 @@ def app(cfg: DictConfig) -> None:
         #     the default strategy no multiple GPUs
         #  2. `barspoon.model.SafeMulticlassAUROC` breaks on multiple GPUs.
         accelerator="gpu",
-        devices=1,
+        devices=cfg.device or 1,
         accumulate_grad_batches=cfg.accumulate_grad_samples // cfg.dataset.batch_size,
         gradient_clip_val=cfg.grad_clip,
         logger=[CSVLogger(save_dir=out_dir), wandb_logger],

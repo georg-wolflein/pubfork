@@ -41,8 +41,17 @@ model:
   linear_dropout: 0.1
   add_zero_attn: true
   layer_norm: true
+  mha1:
+    _target_: pubfork.model.MultiheadAttention # pubfork.relative.DistanceAwareMultiheadAttention
+    _partial_: true
+    # embed_keys: true
+    # embed_queries: false
+    # embed_values: false
+    # trainable_embeddings: true
+    # num_embeddings: 10
 learning_rate: 1e-4
 max_epochs: 25
 patience: 10
 accumulate_grad_samples: 16
 grad_clip: .5
+device: # leave empty to use 1 GPU

@@ -4,7 +4,7 @@ from typing import Dict, Iterable, Literal, Mapping, Optional, Sequence, Union
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning import LightningModule, Trainer
-
+import re
 import numpy as np
 import pandas as pd
 import torch
@@ -190,3 +190,16 @@ class DummyBiggestBatchFirstCallback(Callback):
 
 def pathlist(paths: Sequence[str]) -> Sequence[Path]:
     return [Path(p) for p in paths]
+
+
+def sanitize(x: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]", "_", x)
+
+
+def add_zero_vector_on_dims(x: torch.Tensor, dims: Sequence[int]):
+    """Add a zero vector to x on the specified dimensions."""
+    for dim in dims:
+        x = torch.cat(
+            [x, torch.zeros(*x.shape[:dim], 1, *x.shape[dim + 1 :]).type_as(x)], dim=dim
+        )
+    return x

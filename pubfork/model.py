@@ -1,6 +1,6 @@
 import re
 from collections import ChainMap
-from typing import Any, Dict, Mapping, Optional, Tuple, Sequence, Type
+from typing import Any, Dict, Mapping, Optional, Tuple, Sequence, Type, Union
 from functools import partial
 
 import re
@@ -14,6 +14,8 @@ from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecis
 from omegaconf import DictConfig
 
 from .metrics import create_metrics_for_target
+from .utils import sanitize
+from .relative import DistanceAwareMultiheadAttention
 
 
 class MultiheadAttention(nn.Module):
@@ -113,7 +115,10 @@ class MultiheadAttention(nn.Module):
             # Remove zeroed out tokens
             attention = attention[:, :, :-1, :-1]
 
+        # Apply dropout
         dropout_attention = self.dropout(attention)
+
+        # Apply attention to values
         values = torch.matmul(dropout_attention, v)
 
         # Unify heads
@@ -123,6 +128,26 @@ class MultiheadAttention(nn.Module):
         if need_weights:
             return values, attention
         return (values,)
+
+
+MHA = Union[MultiheadAttention, DistanceAwareMultiheadAttention, nn.MultiheadAttention]
+
+
+class MHAWrapper(nn.Module):
+    __slots__ = ["mha", "add_tile_position_kwarg"]
+
+    def __init__(self, mha: MHA):
+        super().__init__()
+        self.mha = mha
+        self.add_tile_position_kwarg = (
+            "tile_positions" in mha.forward.__code__.co_varnames
+        )
+
+    def forward(self, *args, tile_positions=None, **kwargs):
+        if self.add_tile_position_kwarg:
+            return self.mha(*args, tile_positions=tile_positions, **kwargs)[0]
+        else:
+            return self.mha(*args, tile_positions=tile_positions, **kwargs)[0]
 
 
 class MilTransformer(nn.Module):
@@ -140,6 +165,8 @@ class MilTransformer(nn.Module):
         linear_dropout=0.1,
         add_zero_attn=False,
         layer_norm=True,
+        mha1: Type[MHA] = MultiheadAttention,
+        mhas: Type[MHA] = MultiheadAttention,
     ) -> None:
         super().__init__()
         self.targets = targets
@@ -161,29 +188,8 @@ class MilTransformer(nn.Module):
 
         if do_initial_linear_proj:
             self.linear1 = nn.Linear(d_features, hidden_dim)
-            self.msa1 = MultiheadAttention(
-                embed_dim=hidden_dim,
-                num_heads=num_heads,
-                dropout=att_dropout,
-                batch_first=True,
-                kdim=hidden_dim,
-                vdim=hidden_dim,
-                add_zero_attn=add_zero_attn,
-            )
-        else:
-            self.linear1 = None
-            self.msa1 = MultiheadAttention(
-                embed_dim=d_features,
-                num_heads=num_heads,
-                dropout=att_dropout,
-                batch_first=True,
-                kdim=hidden_dim,
-                vdim=hidden_dim,
-                add_zero_attn=add_zero_attn,
-            )
-        self.msas = nn.ModuleList(
-            [
-                MultiheadAttention(
+            self.msa1 = MHAWrapper(
+                mha1(
                     embed_dim=hidden_dim,
                     num_heads=num_heads,
                     dropout=att_dropout,
@@ -191,6 +197,33 @@ class MilTransformer(nn.Module):
                     kdim=hidden_dim,
                     vdim=hidden_dim,
                     add_zero_attn=add_zero_attn,
+                )
+            )
+        else:
+            self.linear1 = None
+            self.msa1 = MHAWrapper(
+                mhas(
+                    embed_dim=d_features,
+                    num_heads=num_heads,
+                    dropout=att_dropout,
+                    batch_first=True,
+                    kdim=hidden_dim,
+                    vdim=hidden_dim,
+                    add_zero_attn=add_zero_attn,
+                )
+            )
+        self.msas = nn.ModuleList(
+            [
+                MHAWrapper(
+                    mhas(
+                        embed_dim=hidden_dim,
+                        num_heads=num_heads,
+                        dropout=att_dropout,
+                        batch_first=True,
+                        kdim=hidden_dim,
+                        vdim=hidden_dim,
+                        add_zero_attn=add_zero_attn,
+                    )
                 )
                 for _ in range(num_layers - 1)
             ]
@@ -233,7 +266,7 @@ class MilTransformer(nn.Module):
             x = F.relu(x)
         if self.layer_norm:
             x = self.layer_norm1(x)
-        x = self.msa1(x, x, x)[0]
+        x = self.msa1(x, x, x, tile_positions=tile_positions)
         for layer_norm, linear, msa in zip(self.layer_norms, self.linears, self.msas):
             if linear:
                 x = linear(x)
@@ -245,7 +278,7 @@ class MilTransformer(nn.Module):
             #     x = linear(x)
             if layer_norm:
                 x = layer_norm(x)
-            x = msa(x, x, x)[0]
+            x = msa(x, x, x, tile_positions=tile_positions)
 
         # Aggregate the tile tokens
         if self.agg == "mean":
@@ -367,7 +400,3 @@ class LitMilClassificationMixin(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
-
-
-def sanitize(x: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_]", "_", x)
