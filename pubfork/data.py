@@ -52,7 +52,7 @@ class BagDataset(Dataset):
 
         # Collect features from all requested slides
         assert len(self.bags[index]) == 1, "only one bag per index supported"
-        bag_file, = self.bags[index]
+        (bag_file,) = self.bags[index]
         with h5py.File(bag_file, "r") as f:
             # Ensure all features are created with the same feature extractor
             this_slides_extractor = f.attrs.get("extractor")

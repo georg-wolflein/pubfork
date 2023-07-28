@@ -4,6 +4,7 @@ import sys
 import pandas as pd
 import pytorch_lightning as pl
 import torch
+from torch import nn
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers.wandb import WandbLogger
@@ -115,7 +116,7 @@ def app(cfg: DictConfig) -> None:
         batch_size=cfg.dataset.batch_size,
         num_workers=cfg.dataset.num_workers,
         shuffle=True,
-        pin_memory=True
+        pin_memory=True,
     )
 
     valid_ds = BagDataset(
@@ -126,7 +127,10 @@ def app(cfg: DictConfig) -> None:
         deterministic=True,
     )
     valid_dl = DataLoader(
-        valid_ds, batch_size=cfg.dataset.batch_size, num_workers=cfg.dataset.num_workers, pin_memory=True
+        valid_ds,
+        batch_size=cfg.dataset.batch_size,
+        num_workers=cfg.dataset.num_workers,
+        pin_memory=True,
     )
 
     model = LitMilTransformer(cfg)
@@ -139,12 +143,14 @@ def app(cfg: DictConfig) -> None:
         }
     )
     wandb_logger.experiment.log_code(
-        ".", include_fn=lambda path: Path(path).suffix in {".py", ".yaml", ".yml"} and "env" not in Path(path).parts
+        ".",
+        include_fn=lambda path: Path(path).suffix in {".py", ".yaml", ".yml"}
+        and "env" not in Path(path).parts,
     )
     out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
 
     trainer = pl.Trainer(
-        profiler="simple",
+        # profiler="simple",
         default_root_dir=out_dir,
         callbacks=[
             EarlyStopping(monitor="val_loss", mode="min", patience=cfg.patience),
