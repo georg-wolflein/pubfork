@@ -352,7 +352,7 @@ class LitMilClassificationMixin(pl.LightningModule):
 
         if step_name:
             self.log(
-                f"{step_name}_loss",
+                f"{step_name}/loss",
                 loss,
                 on_step=False,
                 on_epoch=True,
