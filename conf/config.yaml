@@ -57,7 +57,8 @@ early_stopping:
   goal: max
   patience: 10
   enabled: false
-max_epochs: 30
+restore_best_checkpoint: true
+max_epochs: 15
 accumulate_grad_samples: 16
 grad_clip: .5
 device: # leave empty to use 1 GPU

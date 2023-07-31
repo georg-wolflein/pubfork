@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence, Tuple
+from typing import Iterable, Mapping, Sequence, Tuple, Any, Optional, Callable
 import sys
 import pandas as pd
 import pytorch_lightning as pl
@@ -84,11 +84,96 @@ def summarize_dataset(targets: ListConfig, df: pd.DataFrame):
     return ret
 
 
-@hydra.main(config_path="conf", config_name="config", version_base="1.3")
-def app(cfg: DictConfig) -> None:
-    pl.seed_everything(cfg.seed)
-    torch.set_float32_matmul_precision("medium")
+def train(
+    cfg: DictConfig,
+    train_dl: DataLoader,
+    valid_dl: DataLoader,
+    crossval_id: Optional[str] = None,
+    crossval_fold: Optional[int] = None,
+) -> Tuple[LitMilTransformer, pl.Trainer, Path, WandbLogger]:
+    model = LitMilTransformer(cfg)
 
+    name = cfg.name if crossval_fold is None else f"{cfg.name}_fold{crossval_fold}"
+
+    wandb_logger = WandbLogger(name or cfg.name, project=cfg.project)
+    wandb_logger.log_hyperparams(
+        {
+            **OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+            "overrides": " ".join(sys.argv[1:]),
+        }
+    )
+    wandb_logger.experiment.log_code(
+        ".",
+        include_fn=lambda path: Path(path).suffix in {".py", ".yaml", ".yml"}
+        and "env" not in Path(path).parts,
+    )
+    if crossval_id is not None:
+        if crossval_id == "":
+            crossval_id = wandb_logger.version
+        wandb_logger.experiment.config.update(
+            {"crossval_id": crossval_id, "crossval_fold": crossval_fold}
+        )
+
+    out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
+    if crossval_id is not None:
+        out_dir = (
+            Path(cfg.output_dir)
+            / crossval_id
+            / f"fold{crossval_fold}_{wandb_logger.version}"
+        )
+
+    define_metrics_callback = DefineWandbMetricsCallback(model, wandb_logger.experiment)
+    model_checkpoint_callback = ModelCheckpoint(
+        monitor=cfg.early_stopping.metric,
+        mode=cfg.early_stopping.goal,
+        filename="checkpoint-{epoch:02d}-{val/loss:0.3f}",
+    )
+
+    callbacks = [
+        DummyBiggestBatchFirstCallback(
+            train_dl.dataset.dummy_batch(cfg.dataset.batch_size)
+        ),
+        model_checkpoint_callback,
+        define_metrics_callback,
+    ]
+
+    if cfg.early_stopping.enabled:
+        callbacks.append(
+            EarlyStopping(
+                monitor=cfg.early_stopping.metric,
+                mode=cfg.early_stopping.goal,
+                patience=cfg.early_stopping.patience,
+            )
+        )
+
+    trainer = pl.Trainer(
+        # profiler="simple",
+        default_root_dir=out_dir,
+        callbacks=callbacks,
+        max_epochs=cfg.max_epochs,
+        # FIXME The number of accelerators is currently fixed to one for the
+        # following reasons:
+        #  1. `trainer.predict()` does not return any predictions if used with
+        #     the default strategy no multiple GPUs
+        #  2. `barspoon.model.SafeMulticlassAUROC` breaks on multiple GPUs.
+        accelerator="gpu",
+        devices=cfg.device or 1,
+        accumulate_grad_batches=cfg.accumulate_grad_samples // cfg.dataset.batch_size,
+        gradient_clip_val=cfg.grad_clip,
+        logger=[CSVLogger(save_dir=out_dir), wandb_logger],
+    )
+
+    print(model)
+
+    trainer.fit(model=model, train_dataloaders=train_dl, val_dataloaders=valid_dl)
+
+    if cfg.restore_best_checkpoint:
+        model = model.load_from_checkpoint(model_checkpoint_callback.best_model_path)
+
+    return model, trainer, out_dir, wandb_logger
+
+
+def load_dataset_df(cfg: DictConfig):
     dataset_df = make_dataset_df(
         clini_tables=pathlist(cfg.dataset.clini_tables),
         slide_tables=pathlist(cfg.dataset.slide_tables),
@@ -102,11 +187,22 @@ def app(cfg: DictConfig) -> None:
     to_delete = pd.Series(False, index=dataset_df.index)
     for target in cfg.dataset.targets:
         to_delete |= dataset_df[target.column].isna()
+        if target.type == "categorical":
+            to_delete |= ~dataset_df[target.column].isin(target.classes)
     if to_delete.any():
         print(
-            f"Removing {to_delete.sum()} patients with missing target labels; {(~to_delete).sum()} remaining"
+            f"Removing {to_delete.sum()} patients with missing target labels (or unsupported classes); {(~to_delete).sum()} remaining"
         )
     dataset_df = dataset_df[~to_delete]
+    return dataset_df
+
+
+@hydra.main(config_path="conf", config_name="config", version_base="1.3")
+def app(cfg: DictConfig) -> None:
+    pl.seed_everything(cfg.seed)
+    torch.set_float32_matmul_precision("medium")
+
+    dataset_df = load_dataset_df(cfg)
 
     # Split validation set off main dataset
     train_items, valid_items = train_test_split(dataset_df.index, test_size=0.2)
@@ -159,65 +255,7 @@ def app(cfg: DictConfig) -> None:
         pin_memory=True,
     )
 
-    model = LitMilTransformer(cfg)
-
-    wandb_logger = WandbLogger(cfg.name, project=cfg.project)
-    wandb_logger.log_hyperparams(
-        {
-            **OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
-            "overrides": " ".join(sys.argv[1:]),
-        }
-    )
-    wandb_logger.experiment.log_code(
-        ".",
-        include_fn=lambda path: Path(path).suffix in {".py", ".yaml", ".yml"}
-        and "env" not in Path(path).parts,
-    )
-    out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
-
-    define_metrics_callback = DefineWandbMetricsCallback(model, wandb_logger.experiment)
-
-    callbacks = [
-        ModelCheckpoint(
-            monitor=cfg.early_stopping.metric,
-            mode=cfg.early_stopping.goal,
-            filename="checkpoint-{epoch:02d}-{val/loss:0.3f}",
-        ),
-        DummyBiggestBatchFirstCallback(
-            train_dl.dataset.dummy_batch(cfg.dataset.batch_size)
-        ),
-        define_metrics_callback,
-    ]
-
-    if cfg.early_stopping.enabled:
-        callbacks.append(
-            EarlyStopping(
-                monitor=cfg.early_stopping.metric,
-                mode=cfg.early_stopping.goal,
-                patience=cfg.early_stopping.patience,
-            )
-        )
-
-    trainer = pl.Trainer(
-        # profiler="simple",
-        default_root_dir=out_dir,
-        callbacks=callbacks,
-        max_epochs=cfg.max_epochs,
-        # FIXME The number of accelerators is currently fixed to one for the
-        # following reasons:
-        #  1. `trainer.predict()` does not return any predictions if used with
-        #     the default strategy no multiple GPUs
-        #  2. `barspoon.model.SafeMulticlassAUROC` breaks on multiple GPUs.
-        accelerator="gpu",
-        devices=cfg.device or 1,
-        accumulate_grad_batches=cfg.accumulate_grad_samples // cfg.dataset.batch_size,
-        gradient_clip_val=cfg.grad_clip,
-        logger=[CSVLogger(save_dir=out_dir), wandb_logger],
-    )
-
-    print(model)
-
-    trainer.fit(model=model, train_dataloaders=train_dl, val_dataloaders=valid_dl)
+    model, trainer, out_dir = train(cfg, train_dl, valid_dl)
 
     predictions = flatten_batched_dicts(
         trainer.predict(model=model, dataloaders=valid_dl, return_predictions=True)

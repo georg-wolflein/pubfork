@@ -176,7 +176,7 @@ class DummyBiggestBatchFirstCallback(Callback):
 
     def on_train_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         print(
-            f"Running a forward pass with a big batch of dummy data to allocate enough memory for the biggest batch"
+            f"Running a forward pass with a big batch of dummy data to allocate enough memory for the biggest batch..."
         )
         pl_module.train()
         batch = pl_module.transfer_batch_to_device(
@@ -185,7 +185,6 @@ class DummyBiggestBatchFirstCallback(Callback):
         loss = pl_module.step(batch, step_name=None)
         loss.backward()
         pl_module.zero_grad()
-        print(f"Done")
 
 
 def pathlist(paths: Sequence[str]) -> Sequence[Path]:
