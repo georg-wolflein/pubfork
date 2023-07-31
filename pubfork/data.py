@@ -53,45 +53,54 @@ class BagDataset(Dataset):
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """Returns features, positions, targets"""
 
-        assert self.choose_one_slide_per_patient
-        bag_file = self.bags[index][0]
-        with h5py.File(bag_file, "r") as f:
-            # Ensure all features are created with the same feature extractor
-            this_slides_extractor = f.attrs.get("extractor")
-            if self.extractor is None:
-                self.extractor = this_slides_extractor
-            assert this_slides_extractor == self.extractor, (
-                "all features have to be extracted with the same feature extractor! "
-                f"{bag_file} has been extracted with {this_slides_extractor}, "
-                f"expected {self.extractor}"
-            )
+        bags = self.bags[index]
+        if self.choose_one_slide_per_patient:
+            bags = bags[:1]
 
-            feats, coords = (
-                torch.tensor(f["feats"][:]).float(),
-                torch.tensor(f["coords"][:]).float(),
-            )
-
-            if self.instances_per_bag:
-                feats, coords = pad_or_sample(
-                    feats,
-                    coords,
-                    n=self.instances_per_bag,
-                    deterministic=self.deterministic,
-                    pad=self.pad,
+        all_feats, all_coords = [], []
+        for bag_file in bags:
+            with h5py.File(bag_file, "r") as f:
+                # Ensure all features are created with the same feature extractor
+                this_slides_extractor = f.attrs.get("extractor")
+                if self.extractor is None:
+                    self.extractor = this_slides_extractor
+                assert this_slides_extractor == self.extractor, (
+                    "all features have to be extracted with the same feature extractor! "
+                    f"{bag_file} has been extracted with {this_slides_extractor}, "
+                    f"expected {self.extractor}"
                 )
 
-        # # We sample both on the slide as well as on the bag level
-        # # to ensure that each of the bags gets represented
-        # # Otherwise, drastically larger bags could "drown out"
-        # # the few instances of the smaller bags
-        # if self.instances_per_bag:
-        #     feats, coords = pad_or_sample(
-        #         feats,
-        #         coords,
-        #         n=self.instances_per_bag,
-        #         deterministic=self.deterministic,
-        #         pad=self.pad,
-        #     )
+                feats, coords = (
+                    torch.tensor(f["feats"][:]).float(),
+                    torch.tensor(f["coords"][:]).float(),
+                )
+
+                if self.instances_per_bag:
+                    feats, coords = pad_or_sample(
+                        feats,
+                        coords,
+                        n=self.instances_per_bag,
+                        deterministic=self.deterministic,
+                        pad=self.pad,
+                    )
+            all_feats.append(feats)
+            all_coords.append(coords)
+
+        feats = torch.cat(all_feats)
+        coords = torch.cat(all_coords)
+
+        # We sample both on the slide as well as on the bag level
+        # to ensure that each of the bags gets represented
+        # Otherwise, drastically larger bags could "drown out"
+        # the few instances of the smaller bags
+        if self.instances_per_bag:
+            feats, coords = pad_or_sample(
+                feats,
+                coords,
+                n=self.instances_per_bag,
+                deterministic=self.deterministic,
+                pad=self.pad,
+            )
 
         return (
             feats,

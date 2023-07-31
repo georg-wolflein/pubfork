@@ -24,9 +24,10 @@ dataset:
   #     classes: [HER2high, HER2low, HER2no]
   #     weights: # optional
   batch_size: 1
-  instances_per_bag: 7000
+  instances_per_bag: 8192
   pad: False
   num_workers: 8
+  choose_one_slide_per_patient: false
 model:
   _target_: pubfork.model.MilTransformer
   d_features: 768
@@ -49,9 +50,10 @@ model:
     # embed_values: false
     # trainable_embeddings: true
     # num_embeddings: 10
+    # dropout: 0.1
 learning_rate: 1e-4
-max_epochs: 25
-patience: 10
+max_epochs: 50
+patience: 50
 accumulate_grad_samples: 16
 grad_clip: .5
 device: # leave empty to use 1 GPU
