@@ -300,23 +300,42 @@ class LitMilClassificationMixin(pl.LightningModule):
         self.learning_rate = learning_rate
         self.targets = targets
 
-        self.metric_goals = {}
+        metric_goals = dict()
         for step_name in ["train", "val", "test"]:
             metrics_and_goals = {
                 target.column: create_metrics_for_target(target)
                 for target in self.targets
             }
-            self.metric_goals.update(
+            metric_goals.update(
                 {
                     f"{step_name}/{column}/{name}": goal
-                    for column, (metric, goals) in metrics_and_goals.items()
+                    for column, (metrics, goals) in metrics_and_goals.items()
                     for (name, goal) in goals.items()
                 }
             )
             metrics = nn.ModuleDict(
-                {c: metric for c, (metric, goal) in metrics_and_goals.items()}
+                {c: metrics for c, (metrics, goals) in metrics_and_goals.items()}
             )
             setattr(self, f"{step_name}_target_metrics", metrics)
+        self.metric_goals = metric_goals
+
+        self.losses = nn.ModuleDict(
+            {
+                target.column: nn.CrossEntropyLoss(
+                    weight=torch.tensor(
+                        target.weights, device=self.device, dtype=torch.float
+                    )
+                    if target.weights
+                    else None,
+                )
+                if target.type == "categorical"
+                else nn.MSELoss()
+                for target in self.targets
+            }
+        )
+        self.loss_weights = {
+            target.column: target.get("weight", 1.0) for target in self.targets
+        }
 
         self.save_hyperparameters()
 
@@ -326,36 +345,14 @@ class LitMilClassificationMixin(pl.LightningModule):
 
         # Calculate the CE or MSE loss for each target, then sum them
         losses = {
-            target.column: (
-                (
-                    # Categorical
-                    F.cross_entropy(
-                        (l := logits[target.column]),
-                        targets[target.column].type_as(l),
-                        weight=torch.tensor(target.weights).type_as(l)
-                        if target.weights
-                        else None,
-                    )
-                    if target.type == "categorical"
-                    # Regression
-                    else F.mse_loss(
-                        (y_pred := logits[target.column]),
-                        targets[target.column].type_as(y_pred),
-                    )
-                )
-                * (
-                    target.get("weight", 1.0)
-                    # if self.current_epoch < 10 or target.type != "continuous"
-                    # else 0.0
-                )
-            )
-            for target in self.targets
+            column: loss(logits[column], targets[column]) * self.loss_weights[column]
+            for column, loss in self.losses.items()
         }
         loss = sum(losses.values())
 
         if step_name:
             self.log(
-                f"{step_name}/loss",
+                f"{step_name}_loss",
                 loss,
                 on_step=False,
                 on_epoch=True,
@@ -363,10 +360,7 @@ class LitMilClassificationMixin(pl.LightningModule):
                 sync_dist=True,
             )
             self.log_dict(
-                {
-                    f"{step_name}/loss/{target.column}": losses[target.column]
-                    for target in self.targets
-                },
+                {f"{step_name}/loss/{column}": l for column, l in losses.items()},
                 on_step=False,
                 on_epoch=True,
                 sync_dist=True,
