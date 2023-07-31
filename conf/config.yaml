@@ -52,8 +52,12 @@ model:
     # num_embeddings: 10
     # dropout: 0.1
 learning_rate: 1e-4
-max_epochs: 50
-patience: 50
+early_stopping:
+  metric: val/${dataset.targets[0].column}/auroc
+  goal: max
+  patience: 10
+  enabled: false
+max_epochs: 30
 accumulate_grad_samples: 16
 grad_clip: .5
 device: # leave empty to use 1 GPU

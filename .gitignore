@@ -1,6 +1,7 @@
 /.vscode/
 /wandb/
 /outputs/
+*.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

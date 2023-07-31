@@ -59,7 +59,7 @@ class DefineWandbMetricsCallback(Callback):
 
     def on_train_start(self, *args, **kwargs) -> None:
         for name, goal in self.metric_goals.items():
-            self.run.define_metric(name, goal=f"{goal}imize")
+            self.run.define_metric(name, goal=f"{goal}imize", step_metric="epoch")
 
 
 def summarize_dataset(targets: ListConfig, df: pd.DataFrame):
@@ -177,21 +177,31 @@ def app(cfg: DictConfig) -> None:
 
     define_metrics_callback = DefineWandbMetricsCallback(model, wandb_logger.experiment)
 
+    callbacks = [
+        ModelCheckpoint(
+            monitor=cfg.early_stopping.metric,
+            mode=cfg.early_stopping.goal,
+            filename="checkpoint-{epoch:02d}-{val/loss:0.3f}",
+        ),
+        DummyBiggestBatchFirstCallback(
+            train_dl.dataset.dummy_batch(cfg.dataset.batch_size)
+        ),
+        define_metrics_callback,
+    ]
+
+    if cfg.early_stopping.enabled:
+        callbacks.append(
+            EarlyStopping(
+                monitor=cfg.early_stopping.metric,
+                mode=cfg.early_stopping.goal,
+                patience=cfg.early_stopping.patience,
+            )
+        )
+
     trainer = pl.Trainer(
         # profiler="simple",
         default_root_dir=out_dir,
-        callbacks=[
-            EarlyStopping(monitor="val/loss", mode="min", patience=cfg.patience),
-            ModelCheckpoint(
-                monitor="val/loss",
-                mode="min",
-                filename="checkpoint-{epoch:02d}-{val/loss:0.3f}",
-            ),
-            DummyBiggestBatchFirstCallback(
-                train_dl.dataset.dummy_batch(cfg.dataset.batch_size)
-            ),
-            define_metrics_callback,
-        ],
+        callbacks=callbacks,
         max_epochs=cfg.max_epochs,
         # FIXME The number of accelerators is currently fixed to one for the
         # following reasons:
