@@ -1,20 +1,11 @@
-import re
-from collections import ChainMap
-from typing import Any, Dict, Mapping, Optional, Tuple, Sequence, Type, Union
-from functools import partial
-
-import re
+from typing import Any, Mapping, Optional, Tuple, Sequence, Type, Union
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-import torchmetrics
-from torchmetrics import Metric
 from torch import Tensor, nn
-from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision
 from omegaconf import DictConfig
 
-from .metrics import create_metrics_for_target
-from .utils import sanitize
+from .metrics import create_metrics_for_target, METRIC_GOALS
 from .relative import DistanceAwareMultiheadAttention
 
 
@@ -134,7 +125,6 @@ MHA = Union[MultiheadAttention, DistanceAwareMultiheadAttention, nn.MultiheadAtt
 
 
 class MHAWrapper(nn.Module):
-
     def __init__(self, mha: MHA):
         super().__init__()
         self.mha = mha
@@ -193,7 +183,7 @@ class MilTransformer(nn.Module):
                     num_heads=num_heads,
                     dropout=att_dropout,
                     batch_first=True,
-                    kdim=hidden_dim,
+                    kdim=hidden_dim // 2,
                     vdim=hidden_dim,
                     add_zero_attn=add_zero_attn,
                 )
@@ -201,7 +191,7 @@ class MilTransformer(nn.Module):
         else:
             self.linear1 = None
             self.msa1 = MHAWrapper(
-                mhas(
+                mha1(
                     embed_dim=d_features,
                     num_heads=num_heads,
                     dropout=att_dropout,
@@ -237,7 +227,7 @@ class MilTransformer(nn.Module):
 
         self.heads = nn.ModuleDict(
             {
-                sanitize(target.column): nn.Linear(
+                target.column: nn.Linear(
                     in_features=hidden_dim,
                     out_features=len(target.classes)
                     if target.type == "categorical"
@@ -251,11 +241,8 @@ class MilTransformer(nn.Module):
         self,
         tile_tokens: torch.Tensor,
         tile_positions: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
-        batch_size, _, _ = tile_tokens.shape
-
-        # shape: [bs, seq_len, d_model]
-        # tile_tokens = self.projector(tile_tokens)
+    ) -> Mapping[str, torch.Tensor]:
+        # tile_tokens: [bs, seq_len, d_model]
 
         x = tile_tokens
         if self.linear1:
@@ -289,7 +276,7 @@ class MilTransformer(nn.Module):
 
         # Apply the corresponding head to each slide-level token
         logits = {
-            target.column: self.heads[sanitize(target.column)](slide_tokens)
+            target.column: self.heads[target.column](slide_tokens).squeeze(-1)
             for target in self.targets
         }
 
@@ -313,17 +300,23 @@ class LitMilClassificationMixin(pl.LightningModule):
         self.learning_rate = learning_rate
         self.targets = targets
 
+        self.metric_goals = {}
         for step_name in ["train", "val", "test"]:
-            setattr(
-                self,
-                f"{step_name}_target_metrics",
-                nn.ModuleDict(
-                    {
-                        sanitize(target.column): create_metrics_for_target(target)
-                        for target in self.targets
-                    }
-                ),
+            metrics_and_goals = {
+                target.column: create_metrics_for_target(target)
+                for target in self.targets
+            }
+            self.metric_goals.update(
+                {
+                    f"{step_name}/{column}/{name}": goal
+                    for column, (metric, goals) in metrics_and_goals.items()
+                    for (name, goal) in goals.items()
+                }
             )
+            metrics = nn.ModuleDict(
+                {c: metric for c, (metric, goal) in metrics_and_goals.items()}
+            )
+            setattr(self, f"{step_name}_target_metrics", metrics)
 
         self.save_hyperparameters()
 
@@ -331,41 +324,66 @@ class LitMilClassificationMixin(pl.LightningModule):
         feats, coords, targets = batch
         logits = self(feats, coords)
 
-        # Calculate the cross entropy loss for each target, then sum them
-        loss = sum(
-            F.cross_entropy(
-                (l := logits[target.column]),
-                targets[target.column].type_as(l),
-                weight=torch.tensor(target.weights).type_as(l)
-                if target.weights
-                else None,
+        # Calculate the CE or MSE loss for each target, then sum them
+        losses = {
+            target.column: (
+                (
+                    # Categorical
+                    F.cross_entropy(
+                        (l := logits[target.column]),
+                        targets[target.column].type_as(l),
+                        weight=torch.tensor(target.weights).type_as(l)
+                        if target.weights
+                        else None,
+                    )
+                    if target.type == "categorical"
+                    # Regression
+                    else F.mse_loss(
+                        (y_pred := logits[target.column]),
+                        targets[target.column].type_as(y_pred),
+                    )
+                )
+                * (
+                    target.get("weight", 1.0)
+                    # if self.current_epoch < 10 or target.type != "continuous"
+                    # else 0.0
+                )
             )
             for target in self.targets
-        )
+        }
+        loss = sum(losses.values())
 
         if step_name:
             self.log(
-                f"{step_name}_loss",
+                f"{step_name}/loss",
                 loss,
                 on_step=False,
                 on_epoch=True,
                 prog_bar=True,
                 sync_dist=True,
             )
+            self.log_dict(
+                {
+                    f"{step_name}/loss/{target.column}": losses[target.column]
+                    for target in self.targets
+                },
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+            )
 
             # Update target-wise metrics
             for target in self.targets:
                 target_metrics = getattr(self, f"{step_name}_target_metrics")[
-                    sanitize(target.column)
+                    target.column
                 ]
-
-                target_metrics.update(
-                    logits[target.column],
-                    targets[target.column].argmax(dim=1),
-                )
+                y_true = targets[target.column]
+                if target.type == "categorical":
+                    y_true = y_true.argmax(dim=1)
+                target_metrics.update(logits[target.column], y_true)
                 self.log_dict(
                     {
-                        f"{step_name}_{target.column}_{name}": metric
+                        f"{step_name}/{target.column}/{name}": metric
                         for name, metric in target_metrics.items()
                     },
                     on_step=False,

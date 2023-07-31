@@ -11,11 +11,14 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.0):
         super().__init__()
         self.d_model = d_model
-        self.div_term = torch.exp(
-            (
-                torch.arange(0, d_model, 2, dtype=torch.float)
-                * -(math.log(10000.0) / d_model)
-            )
+        self.register_buffer(
+            "div_term",
+            torch.exp(
+                (
+                    torch.arange(0, d_model, 2, dtype=torch.float)
+                    * -(math.log(10000.0) / d_model)
+                )
+            ),
         )
         self.dropout = nn.Dropout(dropout)
 
@@ -26,10 +29,7 @@ class PositionalEncoding(nn.Module):
         """
 
         # Compute positional encodings
-        pe = torch.zeros(*positions.shape, self.d_model)
-        print(
-            (positions.float().unsqueeze(-1) * self.div_term).shape, pe[..., 0::2].shape
-        )
+        pe = torch.zeros(*positions.shape, self.d_model, device=positions.device)
         pe[..., 0::2] = torch.sin(positions.float().unsqueeze(-1) * self.div_term)
         pe[..., 1::2] = torch.cos(positions.float().unsqueeze(-1) * self.div_term)
         return self.dropout(pe)
@@ -122,7 +122,7 @@ class DistanceAwareMultiheadAttention(nn.Module):
         diff = tile_positions.unsqueeze(2) - tile_positions.unsqueeze(1)
         # Compute pairwise distances
         dist = torch.norm(diff, dim=-1)
-        print("Max dist:", dist.max())
+        # print("Max dist:", dist.max())
         if max_dist:
             dist /= max_dist
         return dist

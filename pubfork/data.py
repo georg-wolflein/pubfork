@@ -42,6 +42,9 @@ class BagDataset(Dataset):
     encountered in the dataset.
     """
 
+    choose_one_slide_per_patient: bool = True
+    """WARNING: this setting doesn't make sense when actually using the coordinates"""
+
     def __len__(self):
         return len(self.bags)
 
@@ -50,9 +53,8 @@ class BagDataset(Dataset):
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """Returns features, positions, targets"""
 
-        # Collect features from all requested slides
-        assert len(self.bags[index]) == 1, "only one bag per index supported"
-        (bag_file,) = self.bags[index]
+        assert self.choose_one_slide_per_patient
+        bag_file = self.bags[index][0]
         with h5py.File(bag_file, "r") as f:
             # Ensure all features are created with the same feature extractor
             this_slides_extractor = f.attrs.get("extractor")

@@ -24,7 +24,7 @@ dataset:
   #     classes: [HER2high, HER2low, HER2no]
   #     weights: # optional
   batch_size: 1
-  instances_per_bag: 8192
+  instances_per_bag: 7000
   pad: False
   num_workers: 8
 model:
@@ -34,12 +34,12 @@ model:
   agg: max # max, mean
   num_layers: 2
   num_heads: 4
-  do_linear_proj: true
-  do_initial_linear_proj: false
+  do_linear_proj: false
+  do_initial_linear_proj: true
   hidden_dim: 256
-  att_dropout: 0.1
+  att_dropout: 0.3
   linear_dropout: 0.1
-  add_zero_attn: true
+  add_zero_attn: false
   layer_norm: true
   mha1:
     _target_: pubfork.model.MultiheadAttention # pubfork.relative.DistanceAwareMultiheadAttention

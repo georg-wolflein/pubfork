@@ -192,10 +192,6 @@ def pathlist(paths: Sequence[str]) -> Sequence[Path]:
     return [Path(p) for p in paths]
 
 
-def sanitize(x: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_]", "_", x)
-
-
 def add_zero_vector_on_dims(x: torch.Tensor, dims: Sequence[int]):
     """Add a zero vector to x on the specified dimensions."""
     for dim in dims:

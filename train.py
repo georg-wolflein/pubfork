@@ -5,17 +5,17 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 from torch import nn
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, Callback
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers.wandb import WandbLogger
 from torch.nn import functional as F
-import wandb
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from omegaconf import DictConfig, ListConfig, OmegaConf
 import hydra
 from hydra.core.global_hydra import GlobalHydra
 import os
+from textwrap import indent
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
@@ -28,6 +28,7 @@ from pubfork.utils import (
 )
 from pubfork.data import BagDataset
 from pubfork.model import LitMilClassificationMixin
+from pubfork.targets import TargetEncoder
 
 # GlobalHydra().clear()
 # hydra.initialize(config_path="conf")
@@ -50,22 +51,37 @@ class LitMilTransformer(LitMilClassificationMixin):
         return self.model(*args)
 
 
-def encode_target(clini_df: pd.DataFrame, target_cfg: DictConfig) -> torch.Tensor:
-    if target_cfg.type == "categorical":
-        values = clini_df[target_cfg.column].map(
-            {c: i for i, c in enumerate(target_cfg.classes)}
-        )
-        return F.one_hot(
-            torch.tensor(values.values, dtype=torch.long), len(target_cfg.classes)
-        ).float()
-    else:
-        raise NotImplementedError(f"target type {target_cfg.type} not implemented")
+class DefineWandbMetricsCallback(Callback):
+    def __init__(self, model: LitMilClassificationMixin, run) -> None:
+        super().__init__()
+        self.metric_goals = model.metric_goals
+        self.run = run
+
+    def on_train_start(self, *args, **kwargs) -> None:
+        for name, goal in self.metric_goals.items():
+            self.run.define_metric(name, goal=f"{goal}imize")
 
 
-def encode_targets(
-    clini_df: pd.DataFrame, target_cfgs: ListConfig
-) -> Mapping[str, torch.Tensor]:
-    return {target.column: encode_target(clini_df, target) for target in target_cfgs}
+def summarize_dataset(targets: ListConfig, df: pd.DataFrame):
+    ret = f"Number of patients: {len(df)}\n"
+    for target in targets:
+        target_info = f"Target: {target.column} ({target.type})\n"
+        if target.type == "categorical":
+            value_counts = df[target.column].value_counts(normalize=True)
+            inv_value_counts = 1.0 / value_counts
+            inv_value_counts /= inv_value_counts.sum()
+            weights = target.weights or ([1.0] * len(target.classes))
+            weights = pd.Series(weights, index=target.classes)
+            merged = (
+                value_counts.to_frame("freq")
+                .join(inv_value_counts.to_frame("inv freq"), how="outer")
+                .join(weights.to_frame("weight"), how="outer")
+            )
+            target_info += f"  {merged.to_string(float_format=lambda x: f'{x:.4f}')}\n"
+        elif target.type == "continuous":
+            target_info += df[target.column].describe().to_string()
+        ret += indent(target_info, "  ")
+    return ret
 
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.3")
@@ -96,12 +112,22 @@ def app(cfg: DictConfig) -> None:
     train_items, valid_items = train_test_split(dataset_df.index, test_size=0.2)
     train_df, valid_df = dataset_df.loc[train_items], dataset_df.loc[valid_items]
 
+    print("Train dataset:")
+    print(indent(summarize_dataset(cfg.dataset.targets, train_df), "  "))
+
+    print("Validation dataset:")
+    print(indent(summarize_dataset(cfg.dataset.targets, valid_df), "  "))
+
     assert not (
         overlap := set(train_df.index) & set(valid_df.index)
     ), f"unexpected overlap between training and testing set: {overlap}"
 
-    train_targets = encode_targets(train_df, cfg.dataset.targets)
-    valid_targets = encode_targets(valid_df, cfg.dataset.targets)
+    encoders = {
+        target.column: TargetEncoder.for_target(target)
+        for target in cfg.dataset.targets
+    }
+    train_targets = {t: encoder.fit(train_df) for t, encoder in encoders.items()}
+    valid_targets = {t: encoder(valid_df) for t, encoder in encoders.items()}
 
     train_ds = BagDataset(
         bags=train_df.path.values,
@@ -149,19 +175,22 @@ def app(cfg: DictConfig) -> None:
     )
     out_dir = Path(cfg.output_dir) / (wandb_logger.version or "")
 
+    define_metrics_callback = DefineWandbMetricsCallback(model, wandb_logger.experiment)
+
     trainer = pl.Trainer(
         # profiler="simple",
         default_root_dir=out_dir,
         callbacks=[
-            EarlyStopping(monitor="val_loss", mode="min", patience=cfg.patience),
+            EarlyStopping(monitor="val/loss", mode="min", patience=cfg.patience),
             ModelCheckpoint(
-                monitor="val_loss",
+                monitor="val/loss",
                 mode="min",
-                filename="checkpoint-{epoch:02d}-{val_loss:0.3f}",
+                filename="checkpoint-{epoch:02d}-{val/loss:0.3f}",
             ),
             DummyBiggestBatchFirstCallback(
                 train_dl.dataset.dummy_batch(cfg.dataset.batch_size)
             ),
+            define_metrics_callback,
         ],
         max_epochs=cfg.max_epochs,
         # FIXME The number of accelerators is currently fixed to one for the

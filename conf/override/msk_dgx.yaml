@@ -1,6 +1,6 @@
 # @package _global_
 
 dataset:
-  clini_tables: ["/metadata/MSKCC-BRCA-DX_Cohort_1_CLINI.xlsx"]
+  clini_tables: ["/metadata/MSKCC-BRCA-DX_Cohort_1_CLINI_processed.csv"]
   slide_tables: ["/metadata/MSKCC-BRCA-DX_SLIDE.csv"]
   feature_dirs: ["/data/MSKCC-BRCA-DX_BATCH1"]
