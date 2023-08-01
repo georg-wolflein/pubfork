@@ -86,10 +86,8 @@ def create_metrics_for_target(target) -> MetricCollection:
 
     elif target.type == "continuous":
         metrics = {
-            {
-                name: (metric(), goal)
-                for name, (metric, goal) in REGRESSION_METRICS.items()
-            }
+            name: (metric(), goal)
+            for name, (metric, goal) in REGRESSION_METRICS.items()
         }
     else:
         raise NotImplementedError(f"Unknown target type {target.type}")

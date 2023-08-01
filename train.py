@@ -130,7 +130,8 @@ def train(
     model_checkpoint_callback = ModelCheckpoint(
         monitor=cfg.early_stopping.metric,
         mode=cfg.early_stopping.goal,
-        filename="checkpoint-{epoch:02d}-{val/loss:0.3f}",
+        filename="checkpoint-{epoch:02d}-{" + cfg.early_stopping.metric + ":0.3f}",
+        save_last=True,
     )
 
     callbacks = [
@@ -170,6 +171,8 @@ def train(
     print(model)
 
     trainer.fit(model=model, train_dataloaders=train_dl, val_dataloaders=valid_dl)
+
+    torch.save(model_checkpoint_callback.state_dict(), out_dir / "checkpoints.pth")
 
     if cfg.restore_best_checkpoint:
         model = model.load_from_checkpoint(model_checkpoint_callback.best_model_path)
