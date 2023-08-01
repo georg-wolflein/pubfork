@@ -1,0 +1,13 @@
+# @package _global_
+
+learning_rate: 1e-4
+model:
+  add_zero_attn: false
+  agg: mean
+  att_dropout: 0.3
+  do_initial_linear_proj: true
+  do_linear_proj: true
+  hidden_dim: 256
+  linear_dropout: 0.1
+  num_heads: 4
+  num_layers: 2

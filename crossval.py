@@ -72,7 +72,7 @@ def app(cfg: DictConfig) -> None:
     crossval_id = None
 
     for fold_no, (train_idx, valid_idx, test_idx) in enumerate(
-        get_splits(dataset_df.index.values)
+        get_splits(dataset_df.index.values, n_splits=5)
     ):
         print("=" * 50)
         print(f"Fold {fold_no}")

@@ -10,7 +10,7 @@ settings:
 
 name: experiment
 project: pubfork
-output_dir: /mnt/bulk/gwoelflein/georg-transformers/output/${name}
+output_dir: /mnt/bulk/gwoelflein/georg-transformers/output
 seed: 0 # leave empty to use random seed
 dataset:
   # clini_tables: ["/mnt/bulk/gwoelflein/georg-transformers/metadata/MSKCC-BRCA-DX_Cohort_1_CLINI.xlsx"]

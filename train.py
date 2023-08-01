@@ -95,7 +95,11 @@ def train(
 
     name = cfg.name if crossval_fold is None else f"{cfg.name}_fold{crossval_fold}"
 
-    wandb_logger = WandbLogger(name or cfg.name, project=cfg.project)
+    wandb_logger = WandbLogger(
+        name or cfg.name,
+        project=cfg.project,
+        job_type="cv" if crossval_id is not None else "train",
+    )
     wandb_logger.log_hyperparams(
         {
             **OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
