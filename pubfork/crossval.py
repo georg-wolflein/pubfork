@@ -21,14 +21,14 @@ from textwrap import indent
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
-from pubfork.utils import (
+from .utils import (
     flatten_batched_dicts,
     make_preds_df,
 )
-from pubfork.data import BagDataset
-from pubfork.model import LitMilClassificationMixin
-from pubfork.targets import TargetEncoder
-from train import train, load_dataset_df, summarize_dataset
+from .data import BagDataset
+from .model import LitMilClassificationMixin
+from .targets import TargetEncoder
+from .train import train, load_dataset_df, summarize_dataset
 
 
 def get_splits(
@@ -63,7 +63,7 @@ def get_splits(
         )
 
 
-@hydra.main(config_path="conf", config_name="config", version_base="1.3")
+@hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def app(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
     torch.set_float32_matmul_precision("medium")

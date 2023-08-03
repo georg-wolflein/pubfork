@@ -1,0 +1,10 @@
+clini_tables: ["/mnt/bulk/gwoelflein/georg-transformers/metadata/NUCIFORO_BRCA_CLINI.xlsx"]
+slide_tables: ["/mnt/bulk/gwoelflein/georg-transformers/metadata/NUCIFORO_BRCA_SLIDE.csv"]
+feature_dirs: ["/mnt/bulk/gwoelflein/georg-transformers/data/NUCIFORO_BRCA"]
+filename_col: FILENAME
+patient_col: PATIENT
+targets:
+  - column: HER2_status_original
+    type: categorical
+    classes: [HER2high, HER2low, HER2no]
+    weights: # optional

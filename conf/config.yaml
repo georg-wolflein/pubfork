@@ -51,6 +51,8 @@ model:
     # trainable_embeddings: true
     # num_embeddings: 10
     # dropout: 0.1
+deploy:
+  checkpoint: /mnt/bulk/gwoelflein/georg-transformers/output/mq1jcaq8/lightning_logs/version_0/checkpoints/last.ckpt
 learning_rate: 1e-4
 early_stopping:
   metric: val/${dataset.targets[0].column}/auroc

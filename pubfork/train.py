@@ -19,16 +19,16 @@ from textwrap import indent
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
-from pubfork.utils import (
+from .utils import (
     make_dataset_df,
     pathlist,
     DummyBiggestBatchFirstCallback,
     flatten_batched_dicts,
     make_preds_df,
 )
-from pubfork.data import BagDataset
-from pubfork.model import LitMilClassificationMixin
-from pubfork.targets import TargetEncoder
+from .data import BagDataset
+from .model import LitMilClassificationMixin
+from .targets import TargetEncoder
 
 # GlobalHydra().clear()
 # hydra.initialize(config_path="conf")
@@ -204,7 +204,7 @@ def load_dataset_df(cfg: DictConfig):
     return dataset_df
 
 
-@hydra.main(config_path="conf", config_name="config", version_base="1.3")
+@hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def app(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed)
     torch.set_float32_matmul_precision("medium")
@@ -262,7 +262,7 @@ def app(cfg: DictConfig) -> None:
         pin_memory=True,
     )
 
-    model, trainer, out_dir = train(cfg, train_dl, valid_dl)
+    model, trainer, out_dir, wandb_logger = train(cfg, train_dl, valid_dl)
 
     predictions = flatten_batched_dicts(
         trainer.predict(model=model, dataloaders=valid_dl, return_predictions=True)
