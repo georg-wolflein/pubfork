@@ -1,4 +1,3 @@
-import logging
 from pathlib import Path
 from typing import Dict, Iterable, Literal, Mapping, Optional, Sequence, Union
 import pytorch_lightning as pl
@@ -8,6 +7,10 @@ import re
 import numpy as np
 import pandas as pd
 import torch
+from textwrap import indent
+from omegaconf import ListConfig
+
+from loguru import logger
 
 __all__ = [
     "make_dataset_df",
@@ -32,24 +35,18 @@ def make_dataset_df(
         slide_dfs = []
         for slide_table in slide_tables:
             slide_df = read_table(slide_table)
-            slide_df = slide_df.loc[
-                :, slide_df.columns.isin([patient_col, filename_col])  # type: ignore
-            ]
+            slide_df = slide_df.loc[:, slide_df.columns.isin([patient_col, filename_col])]  # type: ignore
 
-            assert filename_col in slide_df, (
-                f"{filename_col} not in {slide_table}. "
-                "Use `--filename-col <COL>` to specify a different column name"
-            )
+            assert filename_col in slide_df, f"{filename_col} not in {slide_table}"
             slide_df["path"] = slide_df[filename_col].map(
                 lambda fn: next(
-                    (path for f in feature_dirs if (path := f / fn).exists()), None
+                    (path for f in feature_dirs if (path := f / fn).exists() or (path := f / f"{fn}.h5").exists()), None
                 )
             )
 
             if (na_idxs := slide_df.path.isna()).any():
-                note_problem(
-                    f"some slides from {slide_table} have no features: {list(slide_df.loc[na_idxs, filename_col])}",
-                    "warn",
+                logger.warning(
+                    f"some slides from {slide_table} have no features: {list(slide_df.loc[na_idxs, filename_col])}"
                 )
             slide_df = slide_df[~na_idxs]
             slide_dfs.append(slide_df)
@@ -66,19 +63,14 @@ def make_dataset_df(
     # df is now a DataFrame containing at least a column "path", possibly a patient and filename column
 
     if clini_tables:
-        assert patient_col in df.columns, (
-            f"a slide table with {patient_col} column has to be specified using `--slide-table <PATH>` "
-            "or the patient column has to be specified with `--patient-col <COL>`"
-        )
+        assert patient_col in df.columns, f"patient column {patient_col} not found in the slide table(s) {slide_tables}"
 
         clini_df = pd.concat([read_table(clini_table) for clini_table in clini_tables])
         # select all the relevant available ground truths,
         # make sure there's no conflicting patient info
         clini_df = (
             # select all important columns
-            clini_df.loc[
-                :, clini_df.columns.isin([patient_col, group_by, *target_labels])  # type: ignore
-            ]
+            clini_df.loc[:, clini_df.columns.isin([patient_col, group_by, *target_labels])]  # type: ignore
             .drop_duplicates()
             .set_index(patient_col, verify_integrity=True)
         )
@@ -96,11 +88,7 @@ def make_dataset_df(
 
     # Group paths and metadata by the specified column
     grouped_paths_df = df.groupby(group_by)[["path"]].aggregate(list)
-    grouped_metadata_df = (
-        df.groupby(group_by)
-        .first()
-        .drop(columns=["path", filename_col], errors="ignore")
-    )
+    grouped_metadata_df = df.groupby(group_by).first().drop(columns=["path", filename_col], errors="ignore")
     df = grouped_metadata_df.join(grouped_paths_df)
 
     return df
@@ -141,20 +129,7 @@ def make_preds_df(
     return preds_df
 
 
-def note_problem(msg, mode: Literal["raise", "warn", "ignore"]):
-    if mode == "raise":
-        raise RuntimeError(msg)
-    elif mode == "warn":
-        logging.warning(msg)
-    elif mode == "ignore":
-        return
-    else:
-        raise ValueError("unknown error propagation type", mode)
-
-
-def flatten_batched_dicts(
-    dicts: Sequence[Dict[str, torch.Tensor]]
-) -> Dict[str, torch.Tensor]:
+def flatten_batched_dicts(dicts: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     # `trainer.predict` gives us a bunch of dictionaries, with `target_labels`
     # as keys and `batch_size` predictions each.  We reconstruct it into a
     # single dict with `target_labels` as the keys and _all_ predictions for
@@ -179,9 +154,7 @@ class DummyBiggestBatchFirstCallback(Callback):
             f"Running a forward pass with a big batch of dummy data to allocate enough memory for the biggest batch..."
         )
         pl_module.train()
-        batch = pl_module.transfer_batch_to_device(
-            self.dummy_batch, pl_module.device, -1
-        )
+        batch = pl_module.transfer_batch_to_device(self.dummy_batch, pl_module.device, -1)
         loss = pl_module.step(batch, step_name=None)
         loss.backward()
         pl_module.zero_grad()
@@ -194,7 +167,27 @@ def pathlist(paths: Sequence[str]) -> Sequence[Path]:
 def add_zero_vector_on_dims(x: torch.Tensor, dims: Sequence[int]):
     """Add a zero vector to x on the specified dimensions."""
     for dim in dims:
-        x = torch.cat(
-            [x, torch.zeros(*x.shape[:dim], 1, *x.shape[dim + 1 :]).type_as(x)], dim=dim
-        )
+        x = torch.cat([x, torch.zeros(*x.shape[:dim], 1, *x.shape[dim + 1 :]).type_as(x)], dim=dim)
     return x
+
+
+def summarize_dataset(targets: ListConfig, df: pd.DataFrame):
+    ret = f"Number of patients: {len(df)}\n"
+    for target in targets:
+        target_info = f"Target: {target.column} ({target.type})\n"
+        if target.type == "categorical":
+            value_counts = df[target.column].value_counts(normalize=True)
+            inv_value_counts = 1.0 / value_counts
+            inv_value_counts /= inv_value_counts.sum()
+            weights = target.weights or ([1.0] * len(target.classes))
+            weights = pd.Series(weights, index=target.classes)
+            merged = (
+                value_counts.to_frame("freq")
+                .join(inv_value_counts.to_frame("inv freq"), how="outer")
+                .join(weights.to_frame("weight"), how="outer")
+            )
+            target_info += f"  {merged.to_string(float_format=lambda x: f'{x:.4f}')}\n"
+        elif target.type == "continuous":
+            target_info += df[target.column].describe().to_string()
+        ret += indent(target_info, "  ")
+    return ret
